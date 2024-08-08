@@ -1,0 +1,12 @@
+# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY
+_commit: 2024.04.23
+_src_path: gh:scientific-python/cookie
+backend: hatch
+email: kedar@openwater.cc
+full_name: Kedar Grama
+license: MIT
+org: OpenwaterHealth
+project_name: openlifu-registration
+project_short_description: 3D Registration of Meshes for Neuronavigation
+url: https://github.com/OpenwaterHealth/OpenLIFU-3DRegistration
+vcs: false
