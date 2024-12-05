@@ -46,8 +46,8 @@ class ICPRegistration:
         icp = vtk.vtkIterativeClosestPointTransform()
         icp.SetSource(moving_polydata)
         icp.SetTarget(fixed_polydata)
-        icp.GetLandmarkTransform().SetModeToRigidBody()
-        icp.SetMaximumNumberOfIterations(100)  # Adjust as needed
+        icp.GetLandmarkTransform().SetModeToSimilarity()  
+        icp.SetMaximumNumberOfIterations(100)
         icp.StartByMatchingCentroidsOn()
         icp.SetCheckMeanDistanceOn()
         icp.Update()
@@ -83,6 +83,19 @@ class ICPRegistration:
             dict: A dictionary containing the calculated metrics.
         """
         metrics = {}
+
+        # Get transformation matrix to extract scale
+        matrix = vtk.vtkMatrix4x4()
+        transform.GetMatrix(matrix)
+        
+        # Calculate scale factor from matrix
+        scale_x = np.sqrt(matrix.GetElement(0,0)**2 + matrix.GetElement(0,1)**2 + matrix.GetElement(0,2)**2)
+        scale_y = np.sqrt(matrix.GetElement(1,0)**2 + matrix.GetElement(1,1)**2 + matrix.GetElement(1,2)**2)
+        scale_z = np.sqrt(matrix.GetElement(2,0)**2 + matrix.GetElement(2,1)**2 + matrix.GetElement(2,2)**2)
+        
+        metrics["Scale_X"] = scale_x
+        metrics["Scale_Y"] = scale_y
+        metrics["Scale_Z"] = scale_z
 
         # Apply the transformation to the moving landmarks
         transformed_points = vtk.vtkPoints()

@@ -4,6 +4,7 @@ import vtk
 import cv2
 import mediapipe as mp
 from vtk.util.numpy_support import vtk_to_numpy
+import numpy as np
 
 
 class MeshRenderer:
@@ -33,7 +34,7 @@ class MeshRenderer:
             # Apply rotations around Y (Azimuth), X (Elevation), and Z (Roll) axes
             camera.Azimuth(angle[0])   # Rotate around Y-axis
             camera.Elevation(angle[1]) # Rotate around X-axis
-            #camera.Roll(angle[2])      # Rotate around Z-axis (Roll)
+            camera.Roll(angle[2])      # Rotate around Z-axis (Roll)
 
             renderer.ResetCamera()
 
@@ -57,6 +58,35 @@ class MeshRenderer:
                 cv2.waitKey(0)
 
         return images
+
+    def get_cameras_for_angles(self, angles, image_size=(512, 512)):
+        """Returns a list of VTK cameras configured for each angle."""
+        cameras = []
+        
+        # Set up basic rendering components
+        renderer = vtk.vtkRenderer()
+        render_window = vtk.vtkRenderWindow()
+        render_window.SetOffScreenRendering(1)
+        render_window.SetSize(image_size[0], image_size[1])
+        render_window.AddRenderer(renderer)
+        
+        for angle in angles:
+            camera = vtk.vtkCamera()
+            # Apply rotations around Y (Azimuth), X (Elevation), and Z (Roll) axes
+            camera.Azimuth(angle[0]) 
+            camera.Elevation(angle[1])
+            camera.Roll(angle[2])
+            
+            # Set standard camera parameters
+            camera.SetPosition(0, 0, 1)  # Starting position
+            camera.SetFocalPoint(0, 0, 0)  # Looking at origin
+            camera.SetViewUp(0, 1, 0)  # Up direction
+            camera.SetClippingRange(0.1, 1000)
+            
+            cameras.append(camera)
+            
+        self.render_window = render_window  # Store for later use
+        return cameras
 
     def animate(self, obj, event):
         """Callback function for the VTK animation."""
@@ -189,3 +219,88 @@ class LandmarkDetector:
             renderer.AddActor(actor)
 
         return renderer
+
+    def triangulate_3d_points(self, landmarks_2d_multiple_views, cameras, render_window):
+        """Triangulate 3D points from multiple 2D views with known camera parameters."""
+        points_3d = []
+        
+        # For each corresponding set of 2D points
+        for i in range(len(landmarks_2d_multiple_views[0])):
+            # Collect the same landmark from all views
+            view_points = []
+            view_matrices = []
+            
+            for view_idx, landmarks in enumerate(landmarks_2d_multiple_views):
+                if landmarks:  # Check if landmarks exist for this view
+                    point_2d = landmarks[i]
+                    camera = cameras[view_idx]
+                    
+                    # Get camera parameters
+                    proj_matrix = vtk.vtkMatrix4x4()
+                    camera.GetProjectionTransformMatrix(proj_matrix)
+                    view_matrix = vtk.vtkMatrix4x4()
+                    camera.GetViewTransformMatrix(view_matrix)
+                    
+                    # Combine view and projection matrices
+                    combined_matrix = vtk.vtkMatrix4x4()
+                    vtk.vtkMatrix4x4.Multiply4x4(proj_matrix, view_matrix, combined_matrix)
+                    
+                    view_points.append(point_2d)
+                    view_matrices.append(combined_matrix)
+            
+            if len(view_points) >= 2:  # Need at least 2 views for triangulation
+                # Use DLT (Direct Linear Transform) to triangulate the 3D point
+                point_3d = self._triangulate_point(view_points, view_matrices)
+                points_3d.append(point_3d)
+        
+        return points_3d
+
+    def _triangulate_point(self, points_2d, projection_matrices):
+        """Implement Direct Linear Transform (DLT) for 3D point triangulation."""
+        A = []
+        for (x, y), P in zip(points_2d, projection_matrices):
+            A.append([
+                x * P.GetElement(2, 0) - P.GetElement(0, 0),
+                x * P.GetElement(2, 1) - P.GetElement(0, 1),
+                x * P.GetElement(2, 2) - P.GetElement(0, 2)
+            ])
+            A.append([
+                y * P.GetElement(2, 0) - P.GetElement(1, 0),
+                y * P.GetElement(2, 1) - P.GetElement(1, 1),
+                y * P.GetElement(2, 2) - P.GetElement(1, 2)
+            ])
+        
+        # Solve using SVD
+        U, S, Vt = np.linalg.svd(A)
+        point_3d = Vt[-1, :3] / Vt[-1, 3]
+        return point_3d
+
+    def detect_face_landmarks_3d(self, images, cameras, render_window):
+        """Detect facial landmarks in multiple views and reconstruct 3D positions."""
+        landmarks_2d_all_views = []
+        annotated_images = []
+        best_views = []
+        
+        # Detect landmarks in each view
+        for image in images:
+            idx, annotated_image, landmarks_2d = self.detect_face_landmarks([image])
+            if idx != -1:
+                landmarks_2d_all_views.append(landmarks_2d)
+                annotated_images.append(annotated_image)
+                best_views.append(True)
+            else:
+                landmarks_2d_all_views.append(None)
+                annotated_images.append(image)
+                best_views.append(False)
+        
+        # Reconstruct 3D points if we have at least 2 views with detected landmarks
+        if sum(best_views) >= 2:
+            # Filter out views without landmarks
+            valid_landmarks = [lm for lm in landmarks_2d_all_views if lm is not None]
+            valid_cameras = [cam for cam, is_valid in zip(cameras, best_views) if is_valid]
+            
+            # Triangulate 3D points
+            landmarks_3d = self.triangulate_3d_points(valid_landmarks, valid_cameras, render_window)
+            return annotated_images, landmarks_3d
+        
+        return annotated_images, None
