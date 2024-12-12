@@ -58,12 +58,11 @@ def main():
     transducer_mesh = load_obj(transducer_path)
 
     # Generate views and detect landmarks on transducer mesh
-    transducer_angles = [(90, 10, -90), (10, 0, 0), (-20, 0, 0)]
-    transducer_rendered_images = renderer.render_mesh_at_angles(transducer_mesh, transducer_angles)
-    transducer_cameras = renderer.get_cameras_for_angles(transducer_angles)
-    _, transducer_landmarks_3d = landmark_detector.detect_face_landmarks_3d(
-        transducer_rendered_images, transducer_cameras, renderer.render_window
-    )
+    transducer_landmarks_3d = np.array([
+        [0.0, 0.0, 0.0], 
+        [0.0, 0.0, 10.0],
+        [0.0, 10.0, 0.0],
+    ])
 
     # Perform ICP registration between transducer and physical scan
     icp_transducer = ICPRegistration(
