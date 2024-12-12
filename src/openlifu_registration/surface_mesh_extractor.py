@@ -3,6 +3,17 @@ import vtk
 from vtk.util import numpy_support
 import numpy as np
 
+SAVE_DEBUG_IMAGES = True
+def save_image(image, filename):
+    """Saves the image to a file."""
+    sitk.WriteImage(image, filename)
+def save_mesh(mesh, filename):
+    """Saves the mesh in STL format."""
+    writer = vtk.vtkSTLWriter()
+    writer.SetFileName(filename)
+    writer.SetInputData(mesh)
+    writer.Write()
+
 class MRIProcessor:
     def read_mri_volume(self, mri_volume_path):
         """Reads the MRI volume from a file."""
@@ -28,6 +39,8 @@ class MRIProcessor:
         binary_image_array = np.array([image_array[z, :, :] > adjusted_thresholds[z] for z in range(z_dim)], dtype=np.uint8)
         binary_image = sitk.GetImageFromArray(binary_image_array)
         binary_image.CopyInformation(image)
+        if SAVE_DEBUG_IMAGES:
+            save_image(binary_image, "binary_image.nii.gz")
         return binary_image, adjusted_thresholds
 
     def _apply_otsu_to_slice(self, slice_image):
@@ -58,6 +71,8 @@ class ITKtoVTKConverter:
         marching_cubes.SetInputData(vtk_image)
         marching_cubes.SetValue(0, 0.5)  # Assuming binary volume with 0 and 1 values
         marching_cubes.Update()
+        if SAVE_DEBUG_IMAGES:
+            save_mesh(marching_cubes.GetOutput(), "marching_cubes_mesh.stl")
         return marching_cubes.GetOutput()
     
     def smooth_mesh_laplacian(self, mesh, iterations=50, relaxation_factor=0.5, feature_edge_smoothing=False, boundary_smoothing=False):
@@ -69,6 +84,8 @@ class ITKtoVTKConverter:
         smoother.SetFeatureEdgeSmoothing(feature_edge_smoothing)
         smoother.SetBoundarySmoothing(boundary_smoothing)
         smoother.Update()
+        if SAVE_DEBUG_IMAGES:
+            save_mesh(smoother.GetOutput(), "smoothed_mesh.stl")
         return smoother.GetOutput()
 
 class SurfaceMeshExtractor:
@@ -92,13 +109,6 @@ class SurfaceMeshExtractor:
             return self.processor.apply_otsu_threshold_slice_by_slice(image)
         else:
             return self.processor.apply_otsu_threshold_global(image)
-
-def save_mesh(mesh, filename):
-    """Saves the mesh in STL format."""
-    writer = vtk.vtkSTLWriter()
-    writer.SetFileName(filename)
-    writer.SetInputData(mesh)
-    writer.Write()
 
 if __name__ == "__main__":
     extractor = SurfaceMeshExtractor()

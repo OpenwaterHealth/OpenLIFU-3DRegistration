@@ -1,11 +1,13 @@
 # run_pipeline.py
 
 import os, cv2, random, numpy as np, logging
-from surface_mesh_extractor import SurfaceMeshExtractor
+from surface_mesh_extractor import SurfaceMeshExtractor, save_mesh, save_image
 from render_and_landmarks import MeshRenderer, LandmarkDetector
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+DEBUG_IMAGES = True
 
 def generate_random_angles(num_angles=30):
     """Generates a list of num_angles tuples, each containing 3 random angles 
@@ -32,10 +34,14 @@ def process_mri_volume(mri_volume_path, output_folder):
         while attempts > 0:
             # Generate multiple views for 3D reconstruction
             angles = generate_random_angles(num_angles=3)  # Use 3 views
-            rendered_images = renderer.render_mesh_at_angles(mesh_smooth, angles)
-
-            # Get camera parameters for each view
-            cameras = renderer.get_cameras_for_angles(angles)
+            rendered_images, cameras = renderer.render_mesh_with_cameras(mesh_smooth, angles)
+            if DEBUG_IMAGES:
+                for i, img in enumerate(rendered_images):
+                    cv2.imwrite(f"rendered_image_new{i}.png", img)
+            stl_rendered_images = renderer.render_mesh_at_angles(mesh_smooth, angles)
+            if DEBUG_IMAGES:
+                for i, img in enumerate(stl_rendered_images):
+                    cv2.imwrite(f"rendered_image_old{i}.png", img)
 
             # Detect landmarks and reconstruct 3D positions
             annotated_images, landmarks_3d = landmark_detector.detect_face_landmarks_3d(

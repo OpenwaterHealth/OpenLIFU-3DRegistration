@@ -8,6 +8,51 @@ import numpy as np
 
 
 class MeshRenderer:
+    def __init__(self):
+        """Initialize VTK rendering pipeline components"""
+        self.renderer = vtk.vtkRenderer()
+        self.render_window = vtk.vtkRenderWindow()
+        self.render_window.AddRenderer(self.renderer)
+        self.render_window.SetOffScreenRendering(1)
+        
+        # Initialize camera
+        self.camera = self.renderer.GetActiveCamera()
+        
+        # Initialize mapper and actor
+        self.mapper = vtk.vtkPolyDataMapper()
+        self.mesh_actor = vtk.vtkActor()
+        self.mesh_actor.SetMapper(self.mapper)
+        
+        # Set default properties
+        self.mesh_actor.GetProperty().SetColor(0.91, 0.76, 0.65)
+        self.mesh_actor.GetProperty().SetAmbient(0.1)
+        self.mesh_actor.GetProperty().SetDiffuse(0.9)
+        self.mesh_actor.GetProperty().SetSpecular(0.1)
+        
+        # Set window size
+        self.render_window.SetSize(512, 512)
+
+    def _ensure_pipeline_setup(self):
+        """Ensure rendering pipeline is properly set up"""
+        if not self.renderer.HasViewProp(self.mesh_actor):
+            self.renderer.AddActor(self.mesh_actor)
+
+    def _get_screenshot(self):
+        """Capture the current render window as a numpy array"""
+        window_to_image = vtk.vtkWindowToImageFilter()
+        window_to_image.SetInput(self.render_window)
+        window_to_image.Update()
+
+        vtk_image = window_to_image.GetOutput()
+        width, height, _ = vtk_image.GetDimensions()
+        vtk_array = vtk_image.GetPointData().GetScalars()
+        components = vtk_array.GetNumberOfComponents()
+        
+        numpy_array = vtk_to_numpy(vtk_array).reshape(height, width, components)
+        numpy_array = cv2.cvtColor(numpy_array, cv2.COLOR_RGB2BGR)
+        
+        return numpy_array
+
     def render_mesh_at_angles(self, mesh, angles, image_size=(512, 512), flip_image=True, skin_color=(0.91, 0.76, 0.65), debug=False):
         """Render the mesh at different angles with a skin tone color and return the images."""
         images = []
@@ -87,6 +132,96 @@ class MeshRenderer:
             
         self.render_window = render_window  # Store for later use
         return cameras
+    
+    def render_mesh_and_get_camera_params(self, mesh, angles, image_size=(512, 512), flip_image=True, skin_color=(0.91, 0.76, 0.65), debug=False):
+        """
+        Render the mesh at different angles and return both the rendered images and camera parameters.
+        
+        Args:
+            mesh: VTK mesh to render
+            angles: List of (azimuth, elevation, roll) angles in degrees
+            image_size: Tuple of (width, height) for rendering
+            flip_image: Whether to flip the rendered image vertically
+            skin_color: RGB tuple for mesh color
+            debug: Whether to display rendered images
+            
+        Returns:
+            tuple: (list of rendered images, list of camera parameter dictionaries)
+        """
+        images = []
+        camera_params = []
+        
+        # Set up rendering pipeline
+        renderer = vtk.vtkRenderer()
+        render_window = vtk.vtkRenderWindow()
+        render_window.SetOffScreenRendering(1)
+        render_window.SetSize(image_size[0], image_size[1])
+        render_window.AddRenderer(renderer)
+        render_window_interactor = vtk.vtkRenderWindowInteractor()
+        render_window_interactor.SetRenderWindow(render_window)
+
+        # Set up mesh actor
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(mesh)
+        mapper.ScalarVisibilityOff()
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(skin_color)
+        renderer.AddActor(actor)
+
+        for angle in angles:
+            camera = renderer.GetActiveCamera()
+            
+            # Reset camera to initial position
+            camera.SetPosition(0, 0, 1)
+            camera.SetFocalPoint(0, 0, 0)
+            camera.SetViewUp(0, 1, 0)
+            
+            # Apply rotations
+            camera.Azimuth(angle[0])
+            camera.Elevation(angle[1])
+            camera.Roll(angle[2])
+            
+            # Reset camera to fit mesh in view
+            renderer.ResetCamera()
+            
+            # Capture camera parameters after reset
+            params = {
+                'position': camera.GetPosition(),
+                'focal_point': camera.GetFocalPoint(),
+                'view_up': camera.GetViewUp(),
+                'distance': camera.GetDistance(),
+                'view_angle': camera.GetViewAngle(),
+                'clipping_range': camera.GetClippingRange(),
+                'parallel_scale': camera.GetParallelScale(),
+                'parallel_projection': camera.GetParallelProjection(),
+                'thickness': camera.GetThickness(),
+                'window_center': camera.GetWindowCenter(),
+                'applied_angles': angle  # Store the original angles used
+            }
+            camera_params.append(params)
+            
+            # Render and capture image
+            render_window.Render()
+            window_to_image_filter = vtk.vtkWindowToImageFilter()
+            window_to_image_filter.SetInput(render_window)
+            window_to_image_filter.Update()
+
+            vtk_image = window_to_image_filter.GetOutput()
+            width, height, _ = vtk_image.GetDimensions()
+            vtk_array = vtk_to_numpy(vtk_image.GetPointData().GetScalars())
+            img = vtk_array.reshape((height, width, -1))
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
+            if flip_image:
+                img = cv2.flip(img, 0)
+            images.append(img)
+
+            if debug:
+                cv2.imshow("Rendered Image", img)
+                cv2.waitKey(0)
+
+            return images, camera_params
 
     def animate(self, obj, event):
         """Callback function for the VTK animation."""
@@ -110,75 +245,65 @@ class MeshRenderer:
         animationScene.AddCue(animationCue)
         animationScene.Start()
 
+
+
 class LandmarkDetector:
-    def detect_face_landmarks(self, images):
-        """Detect facial landmarks in the rendered images and return the image with the highest confidence."""
+    def detect_face_landmarks(self, image):
+        """
+        Detect facial landmarks in a single rendered image.
+        
+        Args:
+            image: Single image array
+            
+        Returns:
+            tuple: (annotated_image, landmarks_2d) where landmarks_2d is a list of (x,y) coordinates
+        """
         mp_face_mesh = mp.solutions.face_mesh
         mp_drawing = mp.solutions.drawing_utils
         mp_drawing_styles = mp.solutions.drawing_styles
-
-        annotated_images = []
-        all_landmarks_2d = []
-        drawing_spec = mp_drawing.DrawingSpec(thickness=1, circle_radius=1)
-
-        highest_confidence = -1  # To track the highest confidence value
-        best_image_index = -1  # To track the index of the image with the highest confidence
-        best_annotated_image = None  # To store the annotated image with the highest confidence
-        best_landmarks_2d = []  # To store the landmarks of the image with the highest confidence
-
-        with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.1) as face_mesh:
-            for idx, image in enumerate(images):
-                # Convert the BGR image to RGB before processing.
-                results = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-                # If landmarks are found, check the confidence score and update if it's the highest
-                if results.multi_face_landmarks and results.multi_face_landmarks[0]:
-                    face_landmarks = results.multi_face_landmarks[0]
-
-                    # For now, the detection confidence is part of the face_mesh process
-                    # In the future, you may want to modify the model to expose this more clearly
-                    detection_confidence = results.multi_face_landmarks[0].landmark[0].visibility
-
-                    # Update the best detection based on confidence score
-                    if detection_confidence > highest_confidence:
-                        highest_confidence = detection_confidence
-                        best_image_index = idx
-
-                        # Copy the current image for annotation
-                        best_annotated_image = image.copy()
-
-                        # Annotate the image with the landmarks
-                        mp_drawing.draw_landmarks(
-                            image=best_annotated_image,
-                            landmark_list=face_landmarks,
-                            connections=mp_face_mesh.FACEMESH_TESSELATION,
-                            landmark_drawing_spec=None,
-                            connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style())
-                        mp_drawing.draw_landmarks(
-                            image=best_annotated_image,
-                            landmark_list=face_landmarks,
-                            connections=mp_face_mesh.FACEMESH_CONTOURS,
-                            landmark_drawing_spec=None,
-                            connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_contours_style())
-                        mp_drawing.draw_landmarks(
-                            image=best_annotated_image,
-                            landmark_list=face_landmarks,
-                            connections=mp_face_mesh.FACEMESH_IRISES,
-                            landmark_drawing_spec=None,
-                            connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_iris_connections_style())
-
-                        # Extract the 2D landmark positions
-                        best_landmarks_2d = [(landmark.x * image.shape[1], landmark.y * image.shape[0]) for landmark in face_landmarks.landmark]
-
-                    # Append the annotated image regardless of confidence to the list
-                    annotated_images.append(best_annotated_image)
-
-                else:
-                    # If no landmarks are detected, append the original image unaltered
-                    annotated_images.append(image)
-
-        # Return the image index, annotated image, and 2D landmarks with the highest confidence
-        return best_image_index, best_annotated_image, best_landmarks_2d
+        
+        annotated_image = image.copy()
+        landmarks_2d = []
+        
+        with mp_face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=0.1
+        ) as face_mesh:
+            # Convert to RGB
+            results = face_mesh.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            
+            if results.multi_face_landmarks and results.multi_face_landmarks[0]:
+                face_landmarks = results.multi_face_landmarks[0]
+                
+                # Draw the landmarks
+                mp_drawing.draw_landmarks(
+                    image=annotated_image,
+                    landmark_list=face_landmarks,
+                    connections=mp_face_mesh.FACEMESH_TESSELATION,
+                    landmark_drawing_spec=None,  
+                    connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style())
+                mp_drawing.draw_landmarks(
+                    image=annotated_image,
+                    landmark_list=face_landmarks,
+                    connections=mp_face_mesh.FACEMESH_CONTOURS,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_contours_style())
+                mp_drawing.draw_landmarks(
+                    image=annotated_image,
+                    landmark_list=face_landmarks,
+                    connections=mp_face_mesh.FACEMESH_IRISES,
+                    landmark_drawing_spec=None,
+                    connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_iris_connections_style())
+                
+                # Extract 2D landmark positions
+                landmarks_2d = [(landmark.x * image.shape[1], landmark.y * image.shape[0]) 
+                              for landmark in face_landmarks.landmark]
+                
+                return annotated_image, landmarks_2d
+                
+            return image, None
 
     def unproject_2d_to_3d(self, camera, renderer, screen_points, depth_value=0.5):
         """Unproject 2D screen points to 3D points in the volume's coordinate space."""
@@ -283,8 +408,8 @@ class LandmarkDetector:
         
         # Detect landmarks in each view
         for image in images:
-            idx, annotated_image, landmarks_2d = self.detect_face_landmarks([image])
-            if idx != -1:
+            annotated_image, landmarks_2d = self.detect_face_landmarks(image)
+            if landmarks_2d is not None:
                 landmarks_2d_all_views.append(landmarks_2d)
                 annotated_images.append(annotated_image)
                 best_views.append(True)
