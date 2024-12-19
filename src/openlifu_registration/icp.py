@@ -3,72 +3,151 @@ import vtk
 from vtk.util import numpy_support
 import numpy as np
 
+class ProcrustesAligner:
+    def __init__(self):
+        self.scale = None
+        self.rotation = None
+        self.translation = None
+        self.rmse = None
+
+    def align(self, source, target):
+        """
+        Compute Procrustes alignment between source and target points.
+        
+        Args:
+            source: (N,3) array of source points
+            target: (N,3) array of target points
+        """
+        # Convert to numpy arrays and ensure correct shape
+        source = np.asarray(source)
+        target = np.asarray(target)
+        
+        # Get centroids
+        source_centroid = np.mean(source, axis=0)
+        target_centroid = np.mean(target, axis=0)
+        
+        # Center both point sets
+        source_centered = source - source_centroid
+        target_centered = target - target_centroid
+        
+        # Compute scale
+        source_norm = np.linalg.norm(source_centered, 'fro')
+        target_norm = np.linalg.norm(target_centered, 'fro')
+        self.scale = target_norm / source_norm
+        
+        # Get optimal rotation
+        H = target_centered.T @ source_centered
+        U, _, Vt = np.linalg.svd(H)
+        
+        # Handle reflection case
+        V = Vt.T
+        det = np.linalg.det(U @ Vt)
+        if det < 0:
+            V[:, -1] *= -1
+        
+        self.rotation = U @ V.T
+        self.translation = target_centroid - self.scale * (self.rotation @ source_centroid)
+        
+        # Compute alignment error
+        transformed = self.transform(source)
+        self.rmse = np.sqrt(np.mean(np.sum((transformed - target)**2, axis=1)))
+        
+        return self
+
+    def transform(self, points):
+        """Apply transformation to points"""
+        return self.scale * (self.rotation @ points.T).T + self.translation
+
+    def get_transformation_matrix(self):
+        """Return 4x4 homogeneous transformation matrix"""
+        matrix = np.eye(4)
+        matrix[:3, :3] = self.scale * self.rotation
+        matrix[:3, 3] = self.translation
+        return matrix
+
 class ICPRegistration:
-    def __init__(self, fixed_landmarks, moving_landmarks, fixed_image):
+    def __init__(self, mode='similarity'):
         """
-        Initializes the ICPRegistration class.
-
+        Initialize ICP registration.
         Args:
-            fixed_landmarks (list): List of 3D landmark points in the fixed/base (MRI) space.
-            moving_landmarks (list): List of 3D landmark points in the moving (physical) space.
-            fixed_image (sitk.Image): The fixed/base MRI image.
+            mode (str): 'similarity' or 'rigid'
         """
-        self.fixed_landmarks = fixed_landmarks
-        self.moving_landmarks = moving_landmarks
-        self.fixed_image = fixed_image
-
-    def perform_icp_registration(self, outlier_rejection_threshold=10.0):
+        self.mode = mode
+        self.initial_transform = None
+        self.final_transform = None
+        self.registration_error = None
+        
+    def register(self, source_mesh, target_mesh, initial_transform=None, 
+                max_iterations=100, tolerance=0.001):
         """
-        Performs ICP registration with outlier rejection.
-
-        Args:
-            outlier_rejection_threshold (float): Threshold distance for outlier rejection in millimeters.
-
-        Returns:
-            vtk.vtkTransform: The resulting transformation.
-            list: List of inlier indices after outlier rejection.
+        Perform ICP registration.
+        Source and target meshes should be vtkPolyData objects.
+        Source is the moving mesh, target is the fixed mesh.
         """
-        # Convert landmark lists to vtkPoints
-        fixed_points = vtk.vtkPoints()
-        moving_points = vtk.vtkPoints()
-        for point in self.fixed_landmarks:
-            fixed_points.InsertNextPoint(point)
-        for point in self.moving_landmarks:
-            moving_points.InsertNextPoint(point)
-
-        # Create polydata objects for the landmarks
-        fixed_polydata = vtk.vtkPolyData()
-        fixed_polydata.SetPoints(fixed_points)
-        moving_polydata = vtk.vtkPolyData()
-        moving_polydata.SetPoints(moving_points)
-
-        # Initialize ICP transform
+        # Set up ICP transform
         icp = vtk.vtkIterativeClosestPointTransform()
-        icp.SetSource(moving_polydata)
-        icp.SetTarget(fixed_polydata)
-        icp.GetLandmarkTransform().SetModeToSimilarity()  
-        icp.SetMaximumNumberOfIterations(100)
-        icp.StartByMatchingCentroidsOn()
-        icp.SetCheckMeanDistanceOn()
+        icp.SetSource(source_mesh)
+        icp.SetTarget(target_mesh)
+        
+        # Configure transform type
+        if self.mode == 'similarity':
+            icp.GetLandmarkTransform().SetModeToSimilarity()
+        elif self.mode == 'rigid':
+            icp.GetLandmarkTransform().SetModeToRigidBody()
+        else:
+            raise ValueError("Invalid mode. Choose 'similarity' or 'rigid'")
+        
+        # Set ICP parameters
+        icp.SetMaximumNumberOfIterations(max_iterations)
+        icp.SetMaximumMeanDistance(tolerance)
+        icp.SetCheckMeanDistance(1)
+        
+        # Apply initial transform if provided
+        if initial_transform is not None:
+            self.initial_transform = initial_transform
+            initial_vtk_transform = vtk.vtkTransform()
+            initial_vtk_transform.SetMatrix(initial_transform.ravel())
+            icp.SetInitialTransform(initial_vtk_transform)
+        
+        # Run registration
+        icp.Modified()
         icp.Update()
-
-        # Get the transformation matrix
-        transform = icp.GetLandmarkTransform()
-
-        # Apply the transformation to the moving landmarks
-        transformed_points = vtk.vtkPoints()
-        transform.TransformPoints(moving_points, transformed_points)
-
-        # Outlier rejection based on distance threshold
-        inlier_indices = []
-        for i in range(moving_points.GetNumberOfPoints()):
-            original_point = moving_points.GetPoint(i)
-            transformed_point = transformed_points.GetPoint(i)
-            distance = np.sqrt(vtk.vtkMath.Distance2BetweenPoints(original_point, transformed_point))
-            if distance <= outlier_rejection_threshold:
-                inlier_indices.append(i)
-
-        return transform, inlier_indices
+        
+        # Store results
+        self.final_transform = np.array(icp.GetMatrix().GetData())
+        self.registration_error = icp.GetMeanDistance()
+        
+        return self.final_transform, self.registration_error
+    
+    def transform_mesh(self, mesh):
+        """
+        Apply final transformation to a mesh.
+        """
+        if self.final_transform is None:
+            raise RuntimeError("Registration must be performed first")
+            
+        transform = vtk.vtkTransform()
+        transform.SetMatrix(self.final_transform.ravel())
+        
+        transformer = vtk.vtkTransformPolyDataFilter()
+        transformer.SetTransform(transform)
+        transformer.SetInputData(mesh)
+        transformer.Update()
+        
+        return transformer.GetOutput()
+    
+    def transform_points(self, points):
+        """
+        Apply final transformation to points.
+        """
+        if self.final_transform is None:
+            raise RuntimeError("Registration must be performed first")
+            
+        # Convert to homogeneous coordinates
+        points_h = np.hstack((points, np.ones((points.shape[0], 1))))
+        transformed_points = (self.final_transform @ points_h.T).T
+        
+        return transformed_points[:, :3]
 
     def calculate_registration_metrics(self, transform, inlier_indices, distance_threshold=2.0):
         """
